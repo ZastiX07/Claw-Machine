@@ -1,7 +1,12 @@
+using System.Threading.Tasks;
 using UnityEngine;
 
 public class ClawController : MonoBehaviour
 {
+    private const int ToyLayer = 6;
+    private const int ClawToyLayer = 7;
+    private const int WinnedToyLayer = 9;
+
     private enum ClawState
     {
         Idle,
@@ -20,6 +25,8 @@ public class ClawController : MonoBehaviour
 
     [Header("Rails")]
     [SerializeField] private MovementController _movement;
+    [SerializeField] private ClawBackendAttemptClient _backendAttemptClient;
+    [SerializeField] private bool _lockControlsUntilBackendResolve = true;
 
     [Header("Vertical Motion")]
     [SerializeField] private Transform _clawRoot;
@@ -117,13 +124,18 @@ public class ClawController : MonoBehaviour
     private float _dropPointPauseTimer;
     private Vector2 _moveInput;
     private ClawState _state = ClawState.Idle;
+    private bool _waitingForBackendResolve;
     private bool _hasScheduledWeakGripSlip;
     private float _scheduledWeakGripSlipProgress;
+    private bool _isWaitingBackendAttemptStart;
+    private bool _hadGrabbedToyInCycle;
 
     void Awake()
     {
         if (_movement == null)
             _movement = FindFirstObjectByType<MovementController>();
+        if (_backendAttemptClient == null)
+            _backendAttemptClient = FindFirstObjectByType<ClawBackendAttemptClient>();
 
         if (_clawRoot == null)
             _clawRoot = transform;
@@ -154,10 +166,19 @@ public class ClawController : MonoBehaviour
             _input.ButtonPressed += OnButtonPressed;
             _input.MovementChanged += OnMovementChanged;
         }
+
+        if (_backendAttemptClient != null)
+            _backendAttemptClient.AttemptResolved += OnBackendAttemptResolved;
     }
 
     void OnDestroy()
     {
+        if (_backendAttemptClient != null)
+        {
+            _backendAttemptClient.AttemptResolved -= OnBackendAttemptResolved;
+            _backendAttemptClient.CancelActiveAttempt();
+        }
+
         ReleaseGrabbedBody();
 
         if (_input != null)
@@ -234,18 +255,30 @@ public class ClawController : MonoBehaviour
         SetAllFingerTargets(Mathf.Max(0f, openX));
     }
 
-    private void OnButtonPressed()
+    private async void OnButtonPressed()
     {
-        if (_state != ClawState.Idle)
+        if (_state != ClawState.Idle || _isWaitingBackendAttemptStart)
             return;
 
         if (_input != null)
             _input.SetControlLocked(true);
 
+        _isWaitingBackendAttemptStart = true;
+        var canStartCycle = await TryStartBackendAttemptAsync();
+        _isWaitingBackendAttemptStart = false;
+
+        if (!canStartCycle)
+        {
+            if (_input != null)
+                _input.SetControlLocked(false);
+            return;
+        }
+
         _topLocalY = _clawRoot.localPosition.y;
         _dropTargetLocalY = CalculateDropTargetLocalY(_topLocalY);
         _dropMoveStarted = false;
         _dropPointPauseTimer = 0f;
+        _hadGrabbedToyInCycle = false;
         ResetGripDetection();
         ResetLuckyGrabDecision();
         ClearWeakGripSlipSchedule();
@@ -256,6 +289,8 @@ public class ClawController : MonoBehaviour
     private void OnMovementChanged(Vector2 move)
     {
         _moveInput = Vector2.ClampMagnitude(move, 1f);
+        if (_backendAttemptClient != null)
+            _backendAttemptClient.OnMovementChanged(_moveInput);
     }
 
     private void UpdateState(float dt)
@@ -363,6 +398,9 @@ public class ClawController : MonoBehaviour
 
     private void BeginClosing()
     {
+        if (_backendAttemptClient != null)
+            _backendAttemptClient.MarkCloseStarted();
+
         CacheCloseStartFingerAngles();
         CloseFingers();
         ClearFingerBlocks();
@@ -375,23 +413,79 @@ public class ClawController : MonoBehaviour
 
     private void CompleteCycle()
     {
+        var shouldWaitForBackendResolve = false;
+        if (_backendAttemptClient != null && _backendAttemptClient.IsAttemptActive)
+        {
+            _backendAttemptClient.CompleteAttempt(_hadGrabbedToyInCycle);
+            shouldWaitForBackendResolve = _lockControlsUntilBackendResolve;
+        }
+
         _state = ClawState.Idle;
+        _waitingForBackendResolve = shouldWaitForBackendResolve;
         _dropMoveStarted = false;
         _dropPointPauseTimer = 0f;
+        _hadGrabbedToyInCycle = false;
         ResetGripDetection();
         ResetLuckyGrabDecision();
         ClearWeakGripSlipSchedule();
 
+        if (_input != null && !_waitingForBackendResolve)
+            _input.SetControlLocked(false);
+    }
+
+    private void OnBackendAttemptResolved(ClawBackendAttemptClient.AttemptResolvedEventArgs eventArgs)
+    {
+        if (!_waitingForBackendResolve)
+            return;
+
+        _waitingForBackendResolve = false;
         if (_input != null)
             _input.SetControlLocked(false);
+
+        if (eventArgs == null)
+            return;
+
+        var result = string.IsNullOrWhiteSpace(eventArgs.result) ? "unknown" : eventArgs.result;
+        if (string.Equals(result, "error", System.StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(result, "cancelled", System.StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning($"[ClawController] Backend resolve finished with '{result}': {eventArgs.errorMessage}", this);
+            return;
+        }
+
+        Debug.Log($"[ClawController] Backend resolve result={result} risk={eventArgs.riskScore}", this);
     }
 
     private void EnterDropRelease()
     {
-        ReleaseGrabbedBody();
+        if (_grabbedBody != null)
+        {
+            _hadGrabbedToyInCycle = true;
+            ReleaseGrabbedBody(WinnedToyLayer);
+        }
+        else
+        {
+            ReleaseGrabbedBody();
+        }
         OpenFingers();
         _dropPointPauseTimer = 0f;
         _state = ClawState.Releasing;
+    }
+
+    private async Task<bool> TryStartBackendAttemptAsync()
+    {
+        if (_backendAttemptClient == null)
+            return true;
+
+        try
+        {
+            return await _backendAttemptClient.TryStartAttemptAsync();
+        }
+        catch (System.Exception exception)
+        {
+            Debug.LogException(exception, this);
+            return false;
+        }
     }
 
     private void UpdateGripDetection(float dt)
@@ -486,6 +580,8 @@ public class ClawController : MonoBehaviour
 
     private bool IsBodyGrabbable(Rigidbody body)
     {
+        if (body != null && body.gameObject.layer == WinnedToyLayer && body != _grabbedBody)
+            return false;
         if (!IsBodyInClawInteractionMask(body))
             return false;
         if (!_allowKinematicToyGrab && body.isKinematic)
@@ -498,6 +594,8 @@ public class ClawController : MonoBehaviour
     {
         if (body == null)
             return false;
+        if (_grabbedBody != null && body == _grabbedBody)
+            return true;
         if (_clawBody != null && body == _clawBody)
             return false;
         if (_clawRoot != null && body.transform.IsChildOf(_clawRoot))
@@ -561,6 +659,7 @@ public class ClawController : MonoBehaviour
             body.useGravity = false;
         if (_holdGrabbedAsKinematic)
             body.isKinematic = true;
+        SetLayerRecursively(body.gameObject, ClawToyLayer);
         body.linearVelocity = Vector3.zero;
         body.angularVelocity = Vector3.zero;
         TryScheduleWeakGripSlip(body, worldPoint, fingerCount);
@@ -568,8 +667,11 @@ public class ClawController : MonoBehaviour
         return true;
     }
 
-    private void ReleaseGrabbedBody()
+    private void ReleaseGrabbedBody(int layerAfterRelease = ToyLayer)
     {
+        if (_grabbedBody != null)
+            SetLayerRecursively(_grabbedBody.gameObject, layerAfterRelease);
+
         if (_grabJoint != null)
             Destroy(_grabJoint);
 
@@ -629,6 +731,16 @@ public class ClawController : MonoBehaviour
         _luckyGrabDecisionBody = null;
         _hasLuckyGrabDecision = false;
         _luckyGrabAccepted = false;
+    }
+
+    private static void SetLayerRecursively(GameObject root, int layer)
+    {
+        if (root == null)
+            return;
+
+        var transforms = root.GetComponentsInChildren<Transform>(true);
+        for (var i = 0; i < transforms.Length; i++)
+            transforms[i].gameObject.layer = layer;
     }
 
     private void TryScheduleWeakGripSlip(Rigidbody body, Vector3 worldPoint, int fingerCount)

@@ -1,0 +1,39 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5d9d32d52abff45e0939798fc6779da6, type: 3}
+  m_Name: ToyCatalog
+  m_EditorClassIdentifier: Assembly-CSharp::ToyCatalogAsset
+  _entries:
+  - Id: bow_tie
+    Prefab: {fileID: 7431578708573448923, guid: 59c4adb2516c44b82a9da7065b763d5e, type: 3}
+    Scale: 1.5
+  - Id: button
+    Prefab: {fileID: 3574881323217134441, guid: 538d40e36e0334bbda6cf4568c3c1f7f, type: 3}
+    Scale: 1.5
+  - Id: sword
+    Prefab: {fileID: 7923631349799312827, guid: f9be353d14b244b93bb637486130c20d, type: 3}
+    Scale: 1.5
+  - Id: pacifier
+    Prefab: {fileID: 6187046898921429795, guid: 90a3ee037bb644e60a4f42be102e5f88, type: 3}
+    Scale: 0.4
+  - Id: heart
+    Prefab: {fileID: 2699738576852045008, guid: 3a0491cd0cf344cd59911e6484f542c6, type: 3}
+    Scale: 0.8
+  - Id: bear
+    Prefab: {fileID: 6725799458266954655, guid: cc597145ef8d540ed814a1e322e9a0a8, type: 3}
+    Scale: 0.8
+  - Id: potion
+    Prefab: {fileID: 5394595306533462436, guid: 830f8f7418582411cbd76bf4db367b93, type: 3}
+    Scale: 0.8
+  - Id: cake
+    Prefab: {fileID: 3073161175260974027, guid: 2b4eefd1839ad446eb8af6036423d62c, type: 3}
+    Scale: 0.8

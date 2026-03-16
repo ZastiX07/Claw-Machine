@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <title>Claw Machine</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      :root {
+        --tg-bg-color: #101318;
+        --tg-text-color: #ffffff;
+        --tg-hint-color: #8f98a3;
+        --tg-button-color: #2ea6ff;
+        --tg-button-text-color: #ffffff;
+        --tg-viewport-height: 100vh;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: var(--tg-bg-color);
+        color: var(--tg-text-color);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        touch-action: none;
+      }
+
+      #unity-root {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: var(--tg-viewport-height);
+        background: var(--tg-bg-color);
+      }
+
+      #unity-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        outline: none;
+        background: #231F20;
+      }
+
+      #unity-loading {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(320px, 86vw);
+        z-index: 5;
+      }
+
+      #unity-loading-text {
+        margin: 0 0 10px;
+        text-align: center;
+        font-size: 13px;
+        color: var(--tg-hint-color);
+      }
+
+      #unity-progress-track {
+        width: 100%;
+        height: 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.18);
+        overflow: hidden;
+      }
+
+      #unity-progress-bar {
+        width: 0%;
+        height: 100%;
+        border-radius: 999px;
+        background: var(--tg-button-color);
+        transition: width 120ms linear;
+      }
+
+      #unity-warning {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: calc(12px + env(safe-area-inset-bottom));
+        z-index: 6;
+      }
+
+      #unity-warning > div {
+        border-radius: 10px;
+        margin-top: 8px;
+        padding: 9px 10px;
+        font-size: 12px;
+      }
+
+    </style>
+  </head>
+  <body>
+    <div id="unity-root">
+      <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
+      <div id="unity-loading">
+        <p id="unity-loading-text">Loading...</p>
+        <div id="unity-progress-track">
+          <div id="unity-progress-bar"></div>
+        </div>
+      </div>
+      <div id="unity-warning"></div>
+    </div>
+
+    <script>
+      var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+
+      function setCssVar(name, value) {
+        if (value) {
+          document.documentElement.style.setProperty(name, value);
+        }
+      }
+
+      function applyTelegramTheme() {
+        if (!tg) {
+          return;
+        }
+        var p = tg.themeParams || {};
+        setCssVar("--tg-bg-color", p.bg_color || "#101318");
+        setCssVar("--tg-text-color", p.text_color || "#ffffff");
+        setCssVar("--tg-hint-color", p.hint_color || "#8f98a3");
+        setCssVar("--tg-button-color", p.button_color || "#2ea6ff");
+        setCssVar("--tg-button-text-color", p.button_text_color || "#ffffff");
+      }
+
+      function updateViewportHeight() {
+        var px = window.innerHeight;
+        if (tg && typeof tg.viewportHeight === "number" && tg.viewportHeight > 0) {
+          px = tg.viewportHeight;
+        }
+        document.documentElement.style.setProperty("--tg-viewport-height", px + "px");
+      }
+
+      function bootstrapTelegram() {
+        if (!tg) {
+          updateViewportHeight();
+          return;
+        }
+
+        tg.ready();
+        tg.expand();
+
+        if (typeof tg.disableVerticalSwipes === "function") {
+          tg.disableVerticalSwipes();
+        }
+
+        applyTelegramTheme();
+        updateViewportHeight();
+
+        tg.onEvent("themeChanged", applyTelegramTheme);
+        tg.onEvent("viewportChanged", updateViewportHeight);
+      }
+
+      window.addEventListener("resize", updateViewportHeight);
+      bootstrapTelegram();
+
+      var canvas = document.querySelector("#unity-canvas");
+      var loading = document.querySelector("#unity-loading");
+      var progressBar = document.querySelector("#unity-progress-bar");
+      var warningBanner = document.querySelector("#unity-warning");
+
+      function unityShowBanner(msg, type) {
+        function updateBannerVisibility() {
+          warningBanner.style.display = warningBanner.children.length ? "block" : "none";
+        }
+
+        var div = document.createElement("div");
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+
+        if (type === "error") {
+          div.style.background = "rgba(195, 43, 49, 0.92)";
+          div.style.color = "#fff";
+        } else {
+          div.style.background = "rgba(255, 210, 70, 0.92)";
+          div.style.color = "#111";
+          setTimeout(function() {
+            if (div.parentNode === warningBanner) {
+              warningBanner.removeChild(div);
+              updateBannerVisibility();
+            }
+          }, 6000);
+        }
+
+        updateBannerVisibility();
+      }
+
+      var buildUrl = "Build";
+      var loaderUrl = buildUrl + "/MiniApp-Game.loader.js";
+      var config = {
+        arguments: [],
+        dataUrl: buildUrl + "/MiniApp-Game.data.unityweb",
+        frameworkUrl: buildUrl + "/MiniApp-Game.framework.js.unityweb",
+        codeUrl: buildUrl + "/MiniApp-Game.wasm.unityweb",
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: "Papaya Dev",
+        productName: "Claw Machine",
+        productVersion: "0.1.0",
+        showBanner: unityShowBanner
+      };
+
+      // Expose Telegram Mini App context for custom JS plugins (.jslib) if needed.
+      window.UnityTelegramMiniApp = {
+        exists: !!tg,
+        getInitData: function() {
+          return tg ? tg.initData || "" : "";
+        },
+        getStartParam: function() {
+          return tg && tg.initDataUnsafe ? tg.initDataUnsafe.start_param || "" : "";
+        },
+        hapticImpact: function(style) {
+          if (!tg || !tg.HapticFeedback) {
+            return;
+          }
+          tg.HapticFeedback.impactOccurred(style || "light");
+        }
+      };
+
+      var script = document.createElement("script");
+      script.src = loaderUrl;
+      script.onload = function() {
+        createUnityInstance(canvas, config, function(progress) {
+          progressBar.style.width = 100 * progress + "%";
+        }).then(function(unityInstance) {
+          loading.style.display = "none";
+        }).catch(function(message) {
+          alert(message);
+        });
+      };
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>

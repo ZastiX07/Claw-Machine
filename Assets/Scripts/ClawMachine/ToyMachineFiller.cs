@@ -1,38 +1,32 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 
 [DisallowMultipleComponent]
 public class ToyMachineFiller : MonoBehaviour
 {
-#if UNITY_EDITOR
-    private const string DefaultGiftsFolder = "Assets/Models/Gifts";
-#endif
+    private const int MaxSpawnAreaPickAttempts = 32;
 
-    [Serializable]
-    public sealed class ToyEntry
+    public enum SpawnQuarter
     {
-        public string Name;
-        public GameObject Prefab;
-
-        [Min(0f)]
-        public float SpawnWeight = 1f;
-
-        [Range(0f, 1f)]
-        public float Rarity = 0f;
-
-        public Vector2 ScaleRange = new Vector2(1f, 1f);
+        BottomLeft = 0,
+        BottomRight = 1,
+        TopLeft = 2,
+        TopRight = 3
     }
+
+    [Header("Catalog")]
+    [SerializeField] private ToyCatalogAsset _toyCatalog;
 
     [Header("Spawn Area")]
     [SerializeField] private Vector3 _spawnAreaCenter = new Vector3(0f, 0.32f, 0f);
     [SerializeField] private Vector3 _spawnAreaSize = new Vector3(0.48f, 0.42f, 0.48f);
+    [SerializeField] private bool _useLShapedArea = true;
+    [SerializeField] private SpawnQuarter _excludedQuarter = SpawnQuarter.BottomLeft;
 
     [Header("Spawn Setup")]
-    [SerializeField, Min(1)] private int _toyCount = 35;
     [SerializeField] private Transform _spawnParent;
     [SerializeField] private string _generatedRootName = "Generated Toys";
     [SerializeField] private bool _refillOnStart = true;
@@ -42,6 +36,10 @@ public class ToyMachineFiller : MonoBehaviour
     [SerializeField] private bool _useFixedSeed = true;
     [SerializeField] private int _seed = 12345;
 
+    [Header("Backend Spawn Plan")]
+    [SerializeField] private ClawBackendApiClient _backendApiClient;
+    [SerializeField] private string _machineId = "main";
+
     [Header("Physics Defaults")]
     [SerializeField] private bool _ensureRigidbody = true;
     [SerializeField] private bool _ensureCollider = true;
@@ -49,15 +47,35 @@ public class ToyMachineFiller : MonoBehaviour
     [SerializeField] private RigidbodyInterpolation _rigidbodyInterpolation = RigidbodyInterpolation.Interpolate;
     [SerializeField] private CollisionDetectionMode _collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
 
-    [Header("Toys")]
-    [SerializeField] private List<ToyEntry> _toys = new List<ToyEntry>();
+    private CancellationTokenSource _destroyCancellationTokenSource;
+    private bool _refillInProgress;
 
-    public IReadOnlyList<ToyEntry> Toys => _toys;
-
-#if UNITY_EDITOR
-    private void Reset()
+    private void Awake()
     {
-        AutoPopulateFromGiftsFolderIfEmpty();
+        if (_toyCatalog == null)
+            _toyCatalog = Resources.Load<ToyCatalogAsset>("ToyCatalog");
+
+        _destroyCancellationTokenSource = new CancellationTokenSource();
+        if (_backendApiClient == null)
+            _backendApiClient = FindFirstObjectByType<ClawBackendApiClient>();
+    }
+
+    private async void Start()
+    {
+        if (!_refillOnStart)
+            return;
+
+        await RefillAsync();
+    }
+
+    private void OnDestroy()
+    {
+        if (_destroyCancellationTokenSource == null)
+            return;
+
+        _destroyCancellationTokenSource.Cancel();
+        _destroyCancellationTokenSource.Dispose();
+        _destroyCancellationTokenSource = null;
     }
 
     private void OnValidate()
@@ -65,53 +83,40 @@ public class ToyMachineFiller : MonoBehaviour
         _spawnAreaSize.x = Mathf.Max(0.01f, _spawnAreaSize.x);
         _spawnAreaSize.y = Mathf.Max(0.01f, _spawnAreaSize.y);
         _spawnAreaSize.z = Mathf.Max(0.01f, _spawnAreaSize.z);
-        AutoPopulateFromGiftsFolderIfEmpty();
-    }
-
-    public void AutoPopulateFromGiftsFolderIfEmpty()
-    {
-        if (_toys.Count > 0)
-            return;
-
-        var modelGuids = AssetDatabase.FindAssets("t:Model", new[] { DefaultGiftsFolder });
-        if (modelGuids.Length == 0)
-            return;
-
-        Array.Sort(modelGuids, StringComparer.Ordinal);
-
-        for (var i = 0; i < modelGuids.Length; i++)
-        {
-            var path = AssetDatabase.GUIDToAssetPath(modelGuids[i]);
-            var prefab = AssetDatabase.LoadMainAssetAtPath(path) as GameObject;
-            if (prefab == null)
-                continue;
-
-            var rarity = modelGuids.Length <= 1 ? 0f : (float)i / (modelGuids.Length - 1);
-            _toys.Add(new ToyEntry
-            {
-                Name = prefab.name,
-                Prefab = prefab,
-                SpawnWeight = 1f,
-                Rarity = rarity,
-                ScaleRange = Vector2.one
-            });
-        }
-    }
-#endif
-
-    private void Start()
-    {
-        if (!_refillOnStart)
-            return;
-
-        Refill();
     }
 
     [ContextMenu("Refill Toys")]
     public void Refill()
     {
-        ClearGenerated();
-        GenerateToys();
+        if (!Application.isPlaying)
+        {
+            Debug.LogWarning($"{nameof(ToyMachineFiller)} refill is runtime-only and requires backend spawn plan.", this);
+            return;
+        }
+
+        _ = RefillAsync();
+    }
+
+    public async Task RefillAsync()
+    {
+        if (_refillInProgress)
+            return;
+
+        _refillInProgress = true;
+        try
+        {
+            ClearGenerated();
+            var plan = await GetSpawnPlanAsync(DestroyToken);
+            GenerateToys(plan);
+        }
+        catch (OperationCanceledException)
+        {
+            // Scene was destroyed while waiting for backend.
+        }
+        finally
+        {
+            _refillInProgress = false;
+        }
     }
 
     [ContextMenu("Clear Generated Toys")]
@@ -129,57 +134,95 @@ public class ToyMachineFiller : MonoBehaviour
 
     public int CountValidEntries()
     {
-        var valid = 0;
-
-        for (var i = 0; i < _toys.Count; i++)
-        {
-            var entry = _toys[i];
-            if (entry == null || entry.Prefab == null)
-                continue;
-
-            if (entry.SpawnWeight <= 0f)
-                continue;
-
-            valid++;
-        }
-
-        return valid;
+        return GetValidCatalogEntries().Count;
     }
 
-    public void GenerateToys()
+    public void GenerateToys(IReadOnlyList<string> toyIds)
     {
-        var validEntries = GetValidEntries();
+        var validEntries = GetValidCatalogEntries();
         if (validEntries.Count == 0)
         {
-            Debug.LogWarning($"{nameof(ToyMachineFiller)} on '{name}' has no valid toy entries.", this);
+            Debug.LogWarning($"{nameof(ToyMachineFiller)} on '{name}' has no valid catalog entries.", this);
+            return;
+        }
+
+        if (toyIds == null || toyIds.Count == 0)
+        {
+            Debug.LogWarning($"{nameof(ToyMachineFiller)} on '{name}' got empty spawn plan.", this);
             return;
         }
 
         var parent = ResolveSpawnParent();
         var generatedRoot = CreateGeneratedRoot(parent);
         var random = CreateRandom();
-        var planned = CreatePlannedSet(validEntries, _toyCount, random);
 
-        // Rare items are spawned first and therefore assigned to the lowest height layers.
-        planned.Sort((a, b) => b.Rarity.CompareTo(a.Rarity));
-
-        for (var i = 0; i < planned.Count; i++)
+        for (var i = 0; i < toyIds.Count; i++)
         {
-            SpawnOne(planned[i], i, planned.Count, generatedRoot, random);
+            SpawnOne(toyIds[i], i, toyIds.Count, generatedRoot, random);
         }
     }
 
-    private List<ToyEntry> GetValidEntries()
+    private async Task<IReadOnlyList<string>> GetSpawnPlanAsync(
+        CancellationToken cancellationToken)
     {
-        var result = new List<ToyEntry>();
+        if (_backendApiClient == null)
+            _backendApiClient = FindFirstObjectByType<ClawBackendApiClient>();
 
-        for (var i = 0; i < _toys.Count; i++)
+        if (_backendApiClient == null || !_backendApiClient.IsConfigured)
         {
-            var entry = _toys[i];
-            if (entry == null || entry.Prefab == null)
+            Debug.LogWarning(
+                $"{nameof(ToyMachineFiller)} backend spawn plan skipped: API client is missing or unconfigured.",
+                this);
+            return Array.Empty<string>();
+        }
+
+        var result = await _backendApiClient.GetMachineSpawnPlanAsync(_machineId, cancellationToken);
+        if (!result.IsSuccess || result.Data == null || result.Data.items == null || result.Data.items.Length == 0)
+        {
+            var error = result == null ? "unknown error" : result.ErrorMessage;
+            Debug.LogWarning(
+                $"{nameof(ToyMachineFiller)} failed to get backend spawn plan: {error}",
+                this);
+            return Array.Empty<string>();
+        }
+
+        var toyIds = new List<string>(result.Data.items.Length);
+        for (var i = 0; i < result.Data.items.Length; i++)
+        {
+            var toyId = result.Data.items[i] != null ? (result.Data.items[i].toyId ?? string.Empty).Trim() : string.Empty;
+            if (string.IsNullOrWhiteSpace(toyId))
                 continue;
 
-            if (entry.SpawnWeight <= 0f)
+            toyIds.Add(toyId);
+        }
+
+        if (toyIds.Count == 0)
+        {
+            Debug.LogWarning(
+                $"{nameof(ToyMachineFiller)} backend spawn plan had no valid toy ids.",
+                this);
+            return Array.Empty<string>();
+        }
+
+        return toyIds;
+    }
+
+    private List<ToyCatalogAsset.Entry> GetValidCatalogEntries()
+    {
+        var result = new List<ToyCatalogAsset.Entry>();
+        if (_toyCatalog == null)
+            return result;
+
+        var entries = _toyCatalog.Entries;
+        if (entries == null)
+            return result;
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+            if (entry == null)
+                continue;
+            if (string.IsNullOrWhiteSpace(entry.Id) || entry.Prefab == null)
                 continue;
 
             result.Add(entry);
@@ -188,21 +231,42 @@ public class ToyMachineFiller : MonoBehaviour
         return result;
     }
 
-    private void SpawnOne(ToyEntry entry, int index, int totalCount, Transform root, System.Random random)
+    private void SpawnOne(
+        string toyId,
+        int index,
+        int totalCount,
+        Transform root,
+        System.Random random)
     {
-        var prefab = entry.Prefab;
-        if (prefab == null)
+        if (!TryResolveCatalogEntry(toyId, out var entry))
             return;
 
         var localPosition = GetLocalSpawnPosition(index, totalCount, random);
         var rotation = GetSpawnRotation(random);
-        var instance = Instantiate(prefab, root);
+        var instance = Instantiate(entry.Prefab, root);
         instance.transform.SetLocalPositionAndRotation(localPosition, rotation);
 
-        var scaleMultiplier = NextRange(random, entry.ScaleRange.x, entry.ScaleRange.y);
+        var scaleMultiplier = Mathf.Max(0.0001f, entry.Scale);
         instance.transform.localScale *= Mathf.Max(0.0001f, scaleMultiplier);
 
         EnsurePhysics(instance);
+    }
+
+    private bool TryResolveCatalogEntry(
+        string toyId,
+        out ToyCatalogAsset.Entry entry)
+    {
+        entry = null;
+
+        if (_toyCatalog == null)
+            return false;
+
+        if (_toyCatalog.TryGetEntry(toyId, out entry) && entry.Prefab != null)
+            return true;
+        Debug.LogWarning(
+            $"{nameof(ToyMachineFiller)} could not resolve toyId='{toyId}'.",
+            this);
+        return false;
     }
 
     private Vector3 GetLocalSpawnPosition(int index, int totalCount, System.Random random)
@@ -213,11 +277,54 @@ public class ToyMachineFiller : MonoBehaviour
         var y01 = Mathf.Lerp(segmentMin, segmentMax, (float)random.NextDouble());
 
         var half = _spawnAreaSize * 0.5f;
-        var x = NextRange(random, -half.x, half.x);
+        var x = 0f;
         var y = Mathf.Lerp(-half.y, half.y, y01);
-        var z = NextRange(random, -half.z, half.z);
+        var z = 0f;
+        PickSpawnXZ(random, half, out x, out z);
 
         return _spawnAreaCenter + new Vector3(x, y, z);
+    }
+
+    private void PickSpawnXZ(System.Random random, Vector3 half, out float x, out float z)
+    {
+        x = 0f;
+        z = 0f;
+
+        for (var attempt = 0; attempt < MaxSpawnAreaPickAttempts; attempt++)
+        {
+            var candidateX = NextRange(random, -half.x, half.x);
+            var candidateZ = NextRange(random, -half.z, half.z);
+            if (IsInsideExcludedQuarter(candidateX, candidateZ))
+                continue;
+
+            x = candidateX;
+            z = candidateZ;
+            return;
+        }
+
+        // Fallback in case of extreme edge settings.
+        x = NextRange(random, 0f, half.x);
+        z = NextRange(random, 0f, half.z);
+    }
+
+    private bool IsInsideExcludedQuarter(float x, float z)
+    {
+        if (!_useLShapedArea)
+            return false;
+
+        switch (_excludedQuarter)
+        {
+            case SpawnQuarter.BottomLeft:
+                return x < 0f && z < 0f;
+            case SpawnQuarter.BottomRight:
+                return x >= 0f && z < 0f;
+            case SpawnQuarter.TopLeft:
+                return x < 0f && z >= 0f;
+            case SpawnQuarter.TopRight:
+                return x >= 0f && z >= 0f;
+            default:
+                return false;
+        }
     }
 
     private Quaternion GetSpawnRotation(System.Random random)
@@ -269,37 +376,6 @@ public class ToyMachineFiller : MonoBehaviour
             : bounds.extents.magnitude / maxScale;
     }
 
-    private List<ToyEntry> CreatePlannedSet(List<ToyEntry> entries, int count, System.Random random)
-    {
-        var result = new List<ToyEntry>(Mathf.Max(0, count));
-        for (var i = 0; i < count; i++)
-            result.Add(PickWeighted(entries, random));
-
-        return result;
-    }
-
-    private static ToyEntry PickWeighted(List<ToyEntry> entries, System.Random random)
-    {
-        var sum = 0f;
-        for (var i = 0; i < entries.Count; i++)
-            sum += Mathf.Max(0f, entries[i].SpawnWeight);
-
-        if (sum <= Mathf.Epsilon)
-            return entries[0];
-
-        var pick = NextRange(random, 0f, sum);
-        var acc = 0f;
-
-        for (var i = 0; i < entries.Count; i++)
-        {
-            acc += Mathf.Max(0f, entries[i].SpawnWeight);
-            if (pick <= acc)
-                return entries[i];
-        }
-
-        return entries[entries.Count - 1];
-    }
-
     private System.Random CreateRandom()
     {
         if (_useFixedSeed)
@@ -339,6 +415,36 @@ public class ToyMachineFiller : MonoBehaviour
 
         Gizmos.color = new Color(0.15f, 0.9f, 1f, 1f);
         Gizmos.DrawWireCube(_spawnAreaCenter, _spawnAreaSize);
+
+        if (!_useLShapedArea)
+            return;
+
+        var quarterSize = new Vector3(_spawnAreaSize.x * 0.5f, _spawnAreaSize.y, _spawnAreaSize.z * 0.5f);
+        var quarterOffset = GetQuarterOffset(_excludedQuarter, _spawnAreaSize);
+        Gizmos.color = new Color(1f, 0.2f, 0.2f, 0.35f);
+        Gizmos.DrawCube(_spawnAreaCenter + quarterOffset, quarterSize);
+        Gizmos.color = new Color(1f, 0.2f, 0.2f, 1f);
+        Gizmos.DrawWireCube(_spawnAreaCenter + quarterOffset, quarterSize);
+    }
+
+    private static Vector3 GetQuarterOffset(SpawnQuarter quarter, Vector3 size)
+    {
+        var x = size.x * 0.25f;
+        var z = size.z * 0.25f;
+
+        switch (quarter)
+        {
+            case SpawnQuarter.BottomLeft:
+                return new Vector3(-x, 0f, -z);
+            case SpawnQuarter.BottomRight:
+                return new Vector3(x, 0f, -z);
+            case SpawnQuarter.TopLeft:
+                return new Vector3(-x, 0f, z);
+            case SpawnQuarter.TopRight:
+                return new Vector3(x, 0f, z);
+            default:
+                return Vector3.zero;
+        }
     }
 
     private static float NextRange(System.Random random, float min, float max)
@@ -351,4 +457,9 @@ public class ToyMachineFiller : MonoBehaviour
 
         return min + (float)random.NextDouble() * (max - min);
     }
+
+    private CancellationToken DestroyToken =>
+        _destroyCancellationTokenSource == null
+            ? CancellationToken.None
+            : _destroyCancellationTokenSource.Token;
 }

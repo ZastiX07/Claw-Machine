@@ -20,6 +20,7 @@ public sealed class BootstrapContext
             return;
         }
 
+
         _statusReporter?.Invoke(message);
     }
 }

@@ -3,7 +3,10 @@
 --- !u!78 &1
 TagManager:
   serializedVersion: 3
-  tags: []
+  tags:
+  - Aya
+  - Ura
+  - Oga
   layers:
   - Default
   - TransparentFX
@@ -12,9 +15,9 @@ TagManager:
   - Water
   - UI
   - Toy
-  - 
-  - 
-  - 
+  - ClawToy
+  - Barrier
+  - WinnedToy
   - 
   - 
   - 
