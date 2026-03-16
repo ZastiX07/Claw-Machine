@@ -541,8 +541,8 @@ MonoBehaviour:
   _maxUrlDecodePasses: 2
   _persistAccessTokenToPlayerPrefs: 1
   _skipIfAccessTokenAlreadyExists: 0
-  _allowDevAuthFallback: 1
-  _allowDevAuthFallbackInEditor: 1
+  _allowDevAuthFallback: 0
+  _allowDevAuthFallbackInEditor: 0
   _devUserId: unity-editor
   _appendPlatformToDevUserId: 1
   _preferDeviceUniqueIdentifier: 1
