@@ -162,6 +162,26 @@ public class ToyMachineFiller : MonoBehaviour
         }
     }
 
+    public bool TrySpawnToyAtTop(string toyId)
+    {
+        if (!TryResolveCatalogEntry(toyId, out var entry))
+            return false;
+
+        var parent = ResolveSpawnParent();
+        var generatedRoot = CreateGeneratedRoot(parent);
+        var random = CreateRuntimeRandom();
+        var localPosition = GetTopLocalSpawnPosition(random);
+        var rotation = GetSpawnRotation(random);
+
+        var instance = Instantiate(entry.Prefab, generatedRoot);
+        instance.transform.SetLocalPositionAndRotation(localPosition, rotation);
+
+        var scaleMultiplier = Mathf.Max(0.0001f, entry.Scale);
+        instance.transform.localScale *= scaleMultiplier;
+        EnsurePhysics(instance);
+        return true;
+    }
+
     private async Task<IReadOnlyList<string>> GetSpawnPlanAsync(
         CancellationToken cancellationToken)
     {
@@ -285,6 +305,13 @@ public class ToyMachineFiller : MonoBehaviour
         return _spawnAreaCenter + new Vector3(x, y, z);
     }
 
+    private Vector3 GetTopLocalSpawnPosition(System.Random random)
+    {
+        var half = _spawnAreaSize * 0.5f;
+        PickSpawnXZ(random, half, out var x, out var z);
+        return _spawnAreaCenter + new Vector3(x, half.y, z);
+    }
+
     private void PickSpawnXZ(System.Random random, Vector3 half, out float x, out float z)
     {
         x = 0f;
@@ -382,6 +409,11 @@ public class ToyMachineFiller : MonoBehaviour
             return new System.Random(_seed);
 
         return new System.Random(Environment.TickCount ^ GetInstanceID());
+    }
+
+    private System.Random CreateRuntimeRandom()
+    {
+        return new System.Random(Environment.TickCount ^ GetInstanceID() ^ Guid.NewGuid().GetHashCode());
     }
 
     private Transform ResolveSpawnParent()

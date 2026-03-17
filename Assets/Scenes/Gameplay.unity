@@ -176,7 +176,7 @@ Light:
   m_Enabled: 1
   serializedVersion: 11
   m_Type: 2
-  m_Color: {r: 0, g: 1, b: 1, a: 1}
+  m_Color: {r: 1, g: 0.5882353, b: 0.20392157, a: 1}
   m_Intensity: 0.3
   m_Range: 1.61
   m_SpotAngle: 30
@@ -1207,7 +1207,7 @@ Light:
   m_LightShadowCasterMode: 0
   m_AreaSize: {x: 1, y: 1}
   m_BounceIntensity: 1
-  m_ColorTemperature: 4646
+  m_ColorTemperature: 2670
   m_UseColorTemperature: 1
   m_BoundingSphereOverride: {x: 0, y: 0, z: 0, w: 0}
   m_UseBoundingSphereOverride: 0
@@ -3352,6 +3352,7 @@ MonoBehaviour:
   _input: {fileID: 2111895620}
   _movement: {fileID: 43424006}
   _backendAttemptClient: {fileID: 1487487971}
+  _toyMachineFiller: {fileID: 0}
   _lockControlsUntilBackendResolve: 1
   _clawRoot: {fileID: 5946180642027594412}
   _dropDistance: 5

@@ -121,6 +121,7 @@ public sealed class ClawBackendApiClient : MonoBehaviour
         public string status;
         public string result;
         public RewardDto reward;
+        public string spawnOnWinToyId;
         public string seedReveal;
         public int riskScore;
     }

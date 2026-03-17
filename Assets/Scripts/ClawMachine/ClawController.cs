@@ -26,6 +26,7 @@ public class ClawController : MonoBehaviour
     [Header("Rails")]
     [SerializeField] private MovementController _movement;
     [SerializeField] private ClawBackendAttemptClient _backendAttemptClient;
+    [SerializeField] private ToyMachineFiller _toyMachineFiller;
     [SerializeField] private bool _lockControlsUntilBackendResolve = true;
 
     [Header("Vertical Motion")]
@@ -136,6 +137,8 @@ public class ClawController : MonoBehaviour
             _movement = FindFirstObjectByType<MovementController>();
         if (_backendAttemptClient == null)
             _backendAttemptClient = FindFirstObjectByType<ClawBackendAttemptClient>();
+        if (_toyMachineFiller == null)
+            _toyMachineFiller = FindFirstObjectByType<ToyMachineFiller>();
 
         if (_clawRoot == null)
             _clawRoot = transform;
@@ -435,12 +438,12 @@ public class ClawController : MonoBehaviour
 
     private void OnBackendAttemptResolved(ClawBackendAttemptClient.AttemptResolvedEventArgs eventArgs)
     {
-        if (!_waitingForBackendResolve)
-            return;
-
-        _waitingForBackendResolve = false;
-        if (_input != null)
-            _input.SetControlLocked(false);
+        if (_waitingForBackendResolve)
+        {
+            _waitingForBackendResolve = false;
+            if (_input != null)
+                _input.SetControlLocked(false);
+        }
 
         if (eventArgs == null)
             return;
@@ -454,6 +457,22 @@ public class ClawController : MonoBehaviour
         }
 
         Debug.Log($"[ClawController] Backend resolve result={result} risk={eventArgs.riskScore}", this);
+
+        if (!string.Equals(result, "win", System.StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var spawnOnWinToyId = string.IsNullOrWhiteSpace(eventArgs.spawnOnWinToyId)
+            ? string.Empty
+            : eventArgs.spawnOnWinToyId.Trim();
+        if (spawnOnWinToyId.Length == 0 || _toyMachineFiller == null)
+            return;
+
+        if (!_toyMachineFiller.TrySpawnToyAtTop(spawnOnWinToyId))
+        {
+            Debug.LogWarning(
+                $"[ClawController] Post-win spawn failed for toyId='{spawnOnWinToyId}'.",
+                this);
+        }
     }
 
     private void EnterDropRelease()

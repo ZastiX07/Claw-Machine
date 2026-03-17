@@ -13,6 +13,7 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
         public string attemptId;
         public string result;
         public string rewardCode;
+        public string spawnOnWinToyId;
         public float rewardRarity;
         public int riskScore;
         public string errorMessage;
@@ -298,6 +299,7 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
                 attemptId = response.attemptId,
                 result = response.result,
                 rewardCode = response.reward != null ? response.reward.code : string.Empty,
+                spawnOnWinToyId = response.spawnOnWinToyId ?? string.Empty,
                 rewardRarity = response.reward != null ? response.reward.rarity : 0f,
                 riskScore = response.riskScore
             });
