@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 91f02de16d73493cbf099f2858f6e56f, type: 3}
   m_Name: ClawBackendSettings
   m_EditorClassIdentifier: Assembly-CSharp::ClawBackendSettingsAsset
-  _baseUrl: https://kcalo.ru/
+  _baseUrl: ENTER_BAKCEND_URL
   _telegramAuthPath: /v1/auth/telegram
   _devAuthPath: /v1/auth/dev
   _accessTokenPlayerPrefsKey: backend_access_token
