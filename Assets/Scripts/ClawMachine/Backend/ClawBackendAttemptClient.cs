@@ -16,7 +16,43 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
         public string spawnOnWinToyId;
         public float rewardRarity;
         public int riskScore;
+        public string outcomeReason;
+        public float chance;
+        public float rewardRoll;
+        public string selectedRewardCode;
+        public float keepChance;
+        public float dropRoll;
+        public bool dropTriggered;
+        public bool localGrabObserved;
+        public bool serverValidatedGrab;
+        public float dropAlignment;
+        public float stability;
+        public float timingQuality;
+        public bool lockedPhaseMovement;
+        public float skillScore;
         public string errorMessage;
+    }
+
+    [Serializable]
+    public sealed class GrabOutcomePreviewEventArgs
+    {
+        public string attemptId;
+        public string predictedResultIfGrabbed;
+        public bool shouldDropOnGrab;
+        public string outcomeReason;
+        public float chance;
+        public float rewardRoll;
+        public string selectedRewardCode;
+        public float keepChance;
+        public float dropRoll;
+        public bool dropTriggered;
+        public bool localGrabObserved;
+        public bool serverValidatedGrab;
+        public float dropAlignment;
+        public float stability;
+        public float timingQuality;
+        public bool lockedPhaseMovement;
+        public float skillScore;
     }
 
     [Serializable]
@@ -53,6 +89,7 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
     [SerializeField] private bool _resultProbeIncludeAuthHeader = true;
 
     public event Action<AttemptResolvedEventArgs> AttemptResolved;
+    public event Action<GrabOutcomePreviewEventArgs> GrabOutcomePreviewReady;
 
     public bool IsBackendEnabled => _apiClient != null && _apiClient.IsConfigured;
     public bool IsAttemptActive => _hasServerAttempt;
@@ -65,8 +102,12 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
     private bool _startInFlight;
     private bool _flushInFlight;
     private bool _resolveInFlight;
+    private bool _previewInFlight;
     private bool _acceptInput;
     private bool _localGrabObserved;
+    private string _grabbedToyHintId;
+    private int _grabbedToyHintFingers;
+    private GrabOutcomePreviewEventArgs _grabOutcomePreview;
     private int _nextSeq;
     private long _pressTimeMs;
     private long _closeStartTimeMs;
@@ -189,6 +230,9 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
             _latestMove = Vector2.zero;
             _pressTimeMs = GetUnixTimeMilliseconds();
             _closeStartTimeMs = 0;
+            _grabbedToyHintId = string.Empty;
+            _grabbedToyHintFingers = 0;
+            _grabOutcomePreview = null;
             _inputBuffer.Clear();
             Log($"Attempt started. id={ShortId(_attemptId)}, token={ShortId(_attemptToken)}");
 
@@ -221,7 +265,28 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
             return;
 
         _closeStartTimeMs = GetUnixTimeMilliseconds();
+        _latestMove = Vector2.zero;
+        _acceptInput = false;
+        CaptureMovementSample();
         Log($"Close phase started for attempt={ShortId(_attemptId)} at {_closeStartTimeMs}.");
+    }
+
+    public void MarkLocalGrabObserved(string toyHintId, int fingerCount)
+    {
+        _localGrabObserved = true;
+        _grabbedToyHintId = NormalizeToyHintId(toyHintId);
+        _grabbedToyHintFingers = Mathf.Max(0, fingerCount);
+
+        if (!_hasServerAttempt || _closeStartTimeMs <= 0 || _resolveInFlight || _previewInFlight)
+            return;
+
+        _ = PreviewAttemptIfGrabbedAsync();
+    }
+
+    public bool TryGetGrabOutcomePreview(out GrabOutcomePreviewEventArgs preview)
+    {
+        preview = _grabOutcomePreview;
+        return preview != null;
     }
 
     public void CompleteAttempt(bool localGrabObserved)
@@ -249,7 +314,8 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
 
         try
         {
-            CaptureMovementSample();
+            if (_acceptInput)
+                CaptureMovementSample();
             await WaitUntilNoFlushInFlightAsync();
             await FlushBufferedInputsAsync(flushAll: true);
 
@@ -260,7 +326,7 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
                     pressTimeMs = _pressTimeMs,
                     closeStartMs = _closeStartTimeMs,
                     localGrabObserved = localGrabObserved,
-                    contactHints = Array.Empty<ClawBackendApiClient.ContactHintDto>()
+                    contactHints = BuildContactHints()
                 }
             };
 
@@ -291,7 +357,13 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
                     Debug.LogWarning($"[BackendAttempt] Claim failed for attempt {attemptId}. {claimResult.ErrorMessage}");
                 }
             }
-            Log($"Resolve completed. id={ShortId(response.attemptId)} result={response.result} risk={response.riskScore}");
+            var debug = response.debug;
+            Log(
+                $"Resolve completed. id={ShortId(response.attemptId)} result={response.result} reason={debug?.outcomeReason ?? "n/a"} risk={response.riskScore} " +
+                $"localGrab={debug?.localGrabObserved ?? false} serverValidated={debug?.serverValidatedGrab ?? false} " +
+                $"alignment={debug?.replay?.dropAlignment ?? 0f:0.###} skill={debug?.replay?.skillScore ?? 0f:0.###} " +
+                $"chance={debug?.chance ?? 0f:0.###} rewardRoll={debug?.rewardRoll ?? 0f:0.###} reward={debug?.selectedRewardCode ?? "<none>"} " +
+                $"dropTriggered={debug?.dropTriggered ?? false} keepChance={debug?.keepChance ?? 0f:0.###} dropRoll={debug?.dropRoll ?? 0f:0.###}");
             _ = SendResultProbeAsync(response.attemptId, response.result, response.riskScore);
 
             EmitResolutionEvent(new AttemptResolvedEventArgs
@@ -301,7 +373,21 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
                 rewardCode = response.reward != null ? response.reward.code : string.Empty,
                 spawnOnWinToyId = response.spawnOnWinToyId ?? string.Empty,
                 rewardRarity = response.reward != null ? response.reward.rarity : 0f,
-                riskScore = response.riskScore
+                riskScore = response.riskScore,
+                outcomeReason = debug != null ? debug.outcomeReason ?? string.Empty : string.Empty,
+                chance = debug != null ? debug.chance : 0f,
+                rewardRoll = debug != null ? debug.rewardRoll : 0f,
+                selectedRewardCode = debug != null ? debug.selectedRewardCode ?? string.Empty : string.Empty,
+                keepChance = debug != null ? debug.keepChance : 0f,
+                dropRoll = debug != null ? debug.dropRoll : 0f,
+                dropTriggered = debug != null && debug.dropTriggered,
+                localGrabObserved = debug != null && debug.localGrabObserved,
+                serverValidatedGrab = debug != null && debug.serverValidatedGrab,
+                dropAlignment = debug != null && debug.replay != null ? debug.replay.dropAlignment : 0f,
+                stability = debug != null && debug.replay != null ? debug.replay.stability : 0f,
+                timingQuality = debug != null && debug.replay != null ? debug.replay.timingQuality : 0f,
+                lockedPhaseMovement = debug != null && debug.replay != null && debug.replay.lockedPhaseMovement,
+                skillScore = debug != null && debug.replay != null ? debug.replay.skillScore : 0f
             });
         }
         catch (OperationCanceledException)
@@ -329,6 +415,86 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
             Log($"Attempt finalized. Resetting local state for id={ShortId(attemptId)}");
             ResetAttemptState();
             _resolveInFlight = false;
+        }
+    }
+
+    private async Task PreviewAttemptIfGrabbedAsync()
+    {
+        if (_previewInFlight || !_hasServerAttempt || _closeStartTimeMs <= 0)
+            return;
+
+        _previewInFlight = true;
+        var attemptId = _attemptId;
+        var attemptToken = _attemptToken;
+
+        try
+        {
+            await WaitUntilNoFlushInFlightAsync();
+            await FlushBufferedInputsAsync(flushAll: true);
+
+            var previewRequest = new ClawBackendApiClient.PreviewAttemptIfGrabbedRequestDto
+            {
+                clientSummary = new ClawBackendApiClient.ResolveClientSummaryDto
+                {
+                    pressTimeMs = _pressTimeMs,
+                    closeStartMs = _closeStartTimeMs,
+                    localGrabObserved = true,
+                    contactHints = BuildContactHints()
+                }
+            };
+
+            var previewResult = await _apiClient.PreviewAttemptIfGrabbedAsync(
+                attemptId,
+                attemptToken,
+                previewRequest,
+                DestroyToken);
+            if (!previewResult.IsSuccess || previewResult.Data == null)
+            {
+                Log($"Preview failed. id={ShortId(attemptId)} error={previewResult?.ErrorMessage}");
+                return;
+            }
+
+            var response = previewResult.Data;
+            var debug = response.debug;
+            _grabOutcomePreview = new GrabOutcomePreviewEventArgs
+            {
+                attemptId = response.attemptId,
+                predictedResultIfGrabbed = response.predictedResultIfGrabbed,
+                shouldDropOnGrab = response.shouldDropOnGrab,
+                outcomeReason = debug != null ? debug.outcomeReason ?? string.Empty : string.Empty,
+                chance = debug != null ? debug.chance : 0f,
+                rewardRoll = debug != null ? debug.rewardRoll : 0f,
+                selectedRewardCode = debug != null ? debug.selectedRewardCode ?? string.Empty : string.Empty,
+                keepChance = debug != null ? debug.keepChance : 0f,
+                dropRoll = debug != null ? debug.dropRoll : 0f,
+                dropTriggered = debug != null && debug.dropTriggered,
+                localGrabObserved = debug != null && debug.localGrabObserved,
+                serverValidatedGrab = debug != null && debug.serverValidatedGrab,
+                dropAlignment = debug != null && debug.replay != null ? debug.replay.dropAlignment : 0f,
+                stability = debug != null && debug.replay != null ? debug.replay.stability : 0f,
+                timingQuality = debug != null && debug.replay != null ? debug.replay.timingQuality : 0f,
+                lockedPhaseMovement = debug != null && debug.replay != null && debug.replay.lockedPhaseMovement,
+                skillScore = debug != null && debug.replay != null ? debug.replay.skillScore : 0f
+            };
+
+            Log(
+                $"Preview ready. id={ShortId(response.attemptId)} predicted={response.predictedResultIfGrabbed} shouldDrop={response.shouldDropOnGrab} " +
+                $"reason={_grabOutcomePreview.outcomeReason} alignment={_grabOutcomePreview.dropAlignment:0.###} skill={_grabOutcomePreview.skillScore:0.###} " +
+                $"chance={_grabOutcomePreview.chance:0.###} rewardRoll={_grabOutcomePreview.rewardRoll:0.###} reward={_grabOutcomePreview.selectedRewardCode} " +
+                $"keepChance={_grabOutcomePreview.keepChance:0.###} dropRoll={_grabOutcomePreview.dropRoll:0.###}");
+            GrabOutcomePreviewReady?.Invoke(_grabOutcomePreview);
+        }
+        catch (OperationCanceledException)
+        {
+            Log($"Preview cancelled. id={ShortId(attemptId)}");
+        }
+        catch (Exception exception)
+        {
+            Debug.LogException(exception, this);
+        }
+        finally
+        {
+            _previewInFlight = false;
         }
     }
 
@@ -473,6 +639,8 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
         _hasServerAttempt = false;
         _acceptInput = false;
         _localGrabObserved = false;
+        _grabbedToyHintId = string.Empty;
+        _grabbedToyHintFingers = 0;
         _nextSeq = 1;
         _pressTimeMs = 0;
         _closeStartTimeMs = 0;
@@ -482,6 +650,8 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
         _inputBuffer.Clear();
         _flushInFlight = false;
         _startInFlight = false;
+        _previewInFlight = false;
+        _grabOutcomePreview = null;
     }
 
     private static long GetUnixTimeMilliseconds()
@@ -524,6 +694,26 @@ public sealed class ClawBackendAttemptClient : MonoBehaviour
             return "v1-default";
 
         return normalized;
+    }
+
+    private ClawBackendApiClient.ContactHintDto[] BuildContactHints()
+    {
+        if (string.IsNullOrWhiteSpace(_grabbedToyHintId))
+            return Array.Empty<ClawBackendApiClient.ContactHintDto>();
+
+        return new[]
+        {
+            new ClawBackendApiClient.ContactHintDto
+            {
+                toyHintId = _grabbedToyHintId,
+                fingers = Mathf.Max(0, _grabbedToyHintFingers)
+            }
+        };
+    }
+
+    private static string NormalizeToyHintId(string toyHintId)
+    {
+        return string.IsNullOrWhiteSpace(toyHintId) ? string.Empty : toyHintId.Trim();
     }
 
     private static string BuildResultProbeUrl(string baseUrl, string probePath)

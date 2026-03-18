@@ -171,7 +171,10 @@ public class ClawController : MonoBehaviour
         }
 
         if (_backendAttemptClient != null)
+        {
             _backendAttemptClient.AttemptResolved += OnBackendAttemptResolved;
+            _backendAttemptClient.GrabOutcomePreviewReady += OnBackendGrabOutcomePreviewReady;
+        }
     }
 
     void OnDestroy()
@@ -179,6 +182,7 @@ public class ClawController : MonoBehaviour
         if (_backendAttemptClient != null)
         {
             _backendAttemptClient.AttemptResolved -= OnBackendAttemptResolved;
+            _backendAttemptClient.GrabOutcomePreviewReady -= OnBackendGrabOutcomePreviewReady;
             _backendAttemptClient.CancelActiveAttempt();
         }
 
@@ -456,7 +460,13 @@ public class ClawController : MonoBehaviour
             return;
         }
 
-        Debug.Log($"[ClawController] Backend resolve result={result} risk={eventArgs.riskScore}", this);
+        Debug.Log(
+            $"[ClawController] Backend resolve result={result} reason={eventArgs.outcomeReason} risk={eventArgs.riskScore} " +
+            $"localGrab={eventArgs.localGrabObserved} serverValidated={eventArgs.serverValidatedGrab} " +
+            $"alignment={eventArgs.dropAlignment:0.###} skill={eventArgs.skillScore:0.###} " +
+            $"chance={eventArgs.chance:0.###} rewardRoll={eventArgs.rewardRoll:0.###} reward={eventArgs.selectedRewardCode} " +
+            $"dropTriggered={eventArgs.dropTriggered} keepChance={eventArgs.keepChance:0.###} dropRoll={eventArgs.dropRoll:0.###}",
+            this);
 
         if (!string.Equals(result, "win", System.StringComparison.OrdinalIgnoreCase))
             return;
@@ -473,6 +483,21 @@ public class ClawController : MonoBehaviour
                 $"[ClawController] Post-win spawn failed for toyId='{spawnOnWinToyId}'.",
                 this);
         }
+    }
+
+    private void OnBackendGrabOutcomePreviewReady(ClawBackendAttemptClient.GrabOutcomePreviewEventArgs eventArgs)
+    {
+        if (eventArgs == null)
+            return;
+
+        Debug.Log(
+            $"[ClawController] Backend preview predicted={eventArgs.predictedResultIfGrabbed} shouldDrop={eventArgs.shouldDropOnGrab} " +
+            $"reason={eventArgs.outcomeReason} alignment={eventArgs.dropAlignment:0.###} skill={eventArgs.skillScore:0.###} " +
+            $"chance={eventArgs.chance:0.###} rewardRoll={eventArgs.rewardRoll:0.###} reward={eventArgs.selectedRewardCode} " +
+            $"keepChance={eventArgs.keepChance:0.###} dropRoll={eventArgs.dropRoll:0.###}",
+            this);
+
+        TryScheduleBackendPredictedSlip();
     }
 
     private void EnterDropRelease()
@@ -681,7 +706,15 @@ public class ClawController : MonoBehaviour
         SetLayerRecursively(body.gameObject, ClawToyLayer);
         body.linearVelocity = Vector3.zero;
         body.angularVelocity = Vector3.zero;
-        TryScheduleWeakGripSlip(body, worldPoint, fingerCount);
+        if (_backendAttemptClient != null && _backendAttemptClient.IsAttemptActive)
+        {
+            _backendAttemptClient.MarkLocalGrabObserved(TryResolveToyHintId(body), fingerCount);
+            TryScheduleBackendPredictedSlip();
+        }
+        else
+        {
+            TryScheduleWeakGripSlip(body, worldPoint, fingerCount);
+        }
         ResetGripDetection();
         return true;
     }
@@ -706,6 +739,15 @@ public class ClawController : MonoBehaviour
         ResetLuckyGrabDecision();
         ClearWeakGripSlipSchedule();
         ResetGripDetection();
+    }
+
+    private static string TryResolveToyHintId(Rigidbody body)
+    {
+        if (body == null)
+            return string.Empty;
+
+        var metadata = body.GetComponentInParent<ToyInstanceMetadata>();
+        return metadata == null ? string.Empty : metadata.ToyId;
     }
 
     private void ResetGripDetection()
@@ -786,6 +828,28 @@ public class ClawController : MonoBehaviour
 
         _hasScheduledWeakGripSlip = true;
         _scheduledWeakGripSlipProgress = Random.Range(min, max);
+    }
+
+    private void TryScheduleBackendPredictedSlip()
+    {
+        if (_backendAttemptClient == null || _grabbedBody == null)
+            return;
+        if (!_backendAttemptClient.TryGetGrabOutcomePreview(out var preview) || preview == null)
+            return;
+        if (!preview.shouldDropOnGrab)
+            return;
+
+        var min = Mathf.Clamp01(_weakGripDropRiseProgressMin);
+        var max = Mathf.Clamp01(_weakGripDropRiseProgressMax);
+        if (max < min)
+        {
+            var temp = min;
+            min = max;
+            max = temp;
+        }
+
+        _hasScheduledWeakGripSlip = true;
+        _scheduledWeakGripSlipProgress = Mathf.Lerp(min, max, Mathf.Clamp01(preview.rewardRoll));
     }
 
     private void EvaluateWeakGripSlipDuringRise()

@@ -107,11 +107,42 @@ public sealed class ClawBackendApiClient : MonoBehaviour
     }
 
     [Serializable]
+    public sealed class PreviewAttemptIfGrabbedRequestDto
+    {
+        public ResolveClientSummaryDto clientSummary;
+    }
+
+    [Serializable]
     public sealed class RewardDto
     {
         public string id;
         public string code;
         public float rarity;
+    }
+
+    [Serializable]
+    public sealed class ResolveReplayDebugDto
+    {
+        public float dropAlignment;
+        public float stability;
+        public float timingQuality;
+        public bool lockedPhaseMovement;
+        public float skillScore;
+    }
+
+    [Serializable]
+    public sealed class ResolveDebugDto
+    {
+        public string outcomeReason;
+        public float chance;
+        public float rewardRoll;
+        public string selectedRewardCode;
+        public float keepChance;
+        public float dropRoll;
+        public bool dropTriggered;
+        public bool localGrabObserved;
+        public bool serverValidatedGrab;
+        public ResolveReplayDebugDto replay;
     }
 
     [Serializable]
@@ -124,6 +155,17 @@ public sealed class ClawBackendApiClient : MonoBehaviour
         public string spawnOnWinToyId;
         public string seedReveal;
         public int riskScore;
+        public ResolveDebugDto debug;
+    }
+
+    [Serializable]
+    public sealed class PreviewAttemptIfGrabbedResponseDto
+    {
+        public string attemptId;
+        public string status;
+        public string predictedResultIfGrabbed;
+        public bool shouldDropOnGrab;
+        public ResolveDebugDto debug;
     }
 
     [Serializable]
@@ -337,6 +379,25 @@ public sealed class ClawBackendApiClient : MonoBehaviour
         var escapedAttemptId = Uri.EscapeDataString(attemptId ?? string.Empty);
         var path = $"/v1/attempts/{escapedAttemptId}/resolve";
         return await SendJsonAsync<ResolveAttemptRequestDto, ResolveAttemptResponseDto>(
+            UnityWebRequest.kHttpVerbPOST,
+            path,
+            requestBody,
+            headers,
+            cancellationToken);
+    }
+
+    public async Task<ApiResult<PreviewAttemptIfGrabbedResponseDto>> PreviewAttemptIfGrabbedAsync(
+        string attemptId,
+        string attemptToken,
+        PreviewAttemptIfGrabbedRequestDto requestBody,
+        CancellationToken cancellationToken)
+    {
+        if (!TryBuildAuthorizedHeaders(attemptToken, includeIdempotency: false, out var headers))
+            return CreateFailure<PreviewAttemptIfGrabbedResponseDto>(0, "Access token is missing.", string.Empty);
+
+        var escapedAttemptId = Uri.EscapeDataString(attemptId ?? string.Empty);
+        var path = $"/v1/attempts/{escapedAttemptId}/preview-if-grabbed";
+        return await SendJsonAsync<PreviewAttemptIfGrabbedRequestDto, PreviewAttemptIfGrabbedResponseDto>(
             UnityWebRequest.kHttpVerbPOST,
             path,
             requestBody,

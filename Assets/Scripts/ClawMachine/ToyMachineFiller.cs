@@ -178,6 +178,7 @@ public class ToyMachineFiller : MonoBehaviour
 
         var scaleMultiplier = Mathf.Max(0.0001f, entry.Scale);
         instance.transform.localScale *= scaleMultiplier;
+        AssignToyMetadata(instance, toyId);
         EnsurePhysics(instance);
         return true;
     }
@@ -269,6 +270,7 @@ public class ToyMachineFiller : MonoBehaviour
         var scaleMultiplier = Mathf.Max(0.0001f, entry.Scale);
         instance.transform.localScale *= Mathf.Max(0.0001f, scaleMultiplier);
 
+        AssignToyMetadata(instance, toyId);
         EnsurePhysics(instance);
     }
 
@@ -381,6 +383,18 @@ public class ToyMachineFiller : MonoBehaviour
         rb.mass = Mathf.Max(0.0001f, _rigidbodyMass);
         rb.interpolation = _rigidbodyInterpolation;
         rb.collisionDetectionMode = _collisionDetectionMode;
+    }
+
+    private static void AssignToyMetadata(GameObject instance, string toyId)
+    {
+        if (instance == null)
+            return;
+
+        var metadata = instance.GetComponent<ToyInstanceMetadata>();
+        if (metadata == null)
+            metadata = instance.AddComponent<ToyInstanceMetadata>();
+
+        metadata.SetToyId(toyId);
     }
 
     private static void TryAddFallbackCollider(GameObject instance)
