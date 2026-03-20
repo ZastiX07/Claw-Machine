@@ -37,3 +37,9 @@ MonoBehaviour:
   - Id: cake
     Prefab: {fileID: 3073161175260974027, guid: 2b4eefd1839ad446eb8af6036423d62c, type: 3}
     Scale: 0.8
+  - Id: tamagoche
+    Prefab: {fileID: 3073161175260974027, guid: 1326c6e94bd624e2eb676b13c55de517, type: 3}
+    Scale: 0.8
+  - Id: ufc
+    Prefab: {fileID: 3073161175260974027, guid: 9c1e5e03722604c0eb2c6868b3cc3d4a, type: 3}
+    Scale: 0.8
